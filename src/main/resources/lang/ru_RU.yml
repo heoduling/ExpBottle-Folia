@@ -113,3 +113,8 @@ give:
     sender: "<green>Вы выдали <yellow><count></yellow> бут. по <yellow><amount_val></yellow> <gray><type></gray> игроку <yellow><target></yellow>.</green>"
     target: "<green>Вам было выдано <yellow><count></yellow> бут. по <yellow><amount_val></yellow> <gray><type></gray>.</green>"
     target_from_console: "<green>Вам было выдано <yellow><count></yellow> бут. по <yellow><amount_val></yellow> <gray><type></gray>.</green>" 
+transfer:
+  pending: '<red>Перевод или возврат ещё не завершён. Если опыт достиг лимита, сначала снимите часть опыта.</red>'
+  failed: '<red>Перевод не выполнен. Списанный опыт будет возвращён, при следующем входе, если вы вышли.</red>'
+  capacity: '<red>Опыт получателя превысил бы допустимый предел. Перевод отменён, опыт будет возвращён.</red>'
+  refunded: '<green>Возвращено <yellow><amount_xp></yellow> очков опыта.</green>'

@@ -113,3 +113,8 @@ give:
     sender: "<green>You gave <yellow><count></yellow> bottle(s) of <yellow><amount_val></yellow> <gray><type></gray> to <yellow><target></yellow>.</green>"
     target: "<green>You have been given <yellow><count></yellow> bottle(s) of <yellow><amount_val></yellow> <gray><type></gray>.</green>"
     target_from_console: "<green>You have been given <yellow><count></yellow> bottle(s) of <yellow><amount_val></yellow> <gray><type></gray>.</green>" 
+transfer:
+  pending: '<red>A transfer or refund is still pending. If your experience is full, withdraw some first.</red>'
+  failed: '<red>Transfer failed. Debited experience will be refunded, on next login if offline.</red>'
+  capacity: '<red>The recipient would exceed the supported experience limit. The transfer was cancelled and will be refunded.</red>'
+  refunded: '<green>Refunded <yellow><amount_xp></yellow> experience points.</green>'

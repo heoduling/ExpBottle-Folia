@@ -1,0 +1,6 @@
+# 新增转账与退款提示；已有语言文件会自动补齐缺失项。
+transfer:
+  pending: '<red>上一笔转账或退款尚未完成。若经验已满，请先取出部分经验再试。</red>'
+  failed: '<red>转账未完成；已扣除的经验会退回，离线退款将在下次登录领取。</red>'
+  capacity: '<red>接收方经验超过可支持的上限，转账已取消，已扣除的经验会退回。</red>'
+  refunded: '<green>已退还 <yellow><amount_xp></yellow> 点经验。</green>'

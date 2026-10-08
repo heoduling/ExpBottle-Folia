@@ -1,0 +1,56 @@
+ExpBottle 2.1.1-4 — six full-review fixes, 2026-10-08
+
+Base: the reviewed 2.1.1-3 source; all 10 baseline business Java files match the evidence.
+Upstream: wilddip/ExpBottle, commit 5103b648c2e89781ec78afbce0a78b6babbfdf5a.
+This patch retains the earlier holder, launch cancellation, transfer and remote-loader repairs.
+
+Build: Maven 3.9.11, Temurin 25.0.4.1+1, compiler --release 21.
+Normal: mvn -B -ntp clean verify
+Cached workstation: mvn -B -ntp -o -s build-settings.xml clean verify
+Output: target/ExpBottle-2.1.1-4.jar (shaded; do not use original-*.jar).
+Unit tests: 21, zero failures/errors/skips. No test probe or JUnit/Mockito in the release JAR.
+Exact-core runtime: 16 repair/lifecycle cases, 46 functional assertions, 8 integration cases.
+
+Changes:
+- Reject unsupported long balances before withdrawal/splitting; split builds the item first,
+  debits before delivery, and restores the inventory snapshot/debit on a failed insertion.
+- Parse the actual Brigadier args, use PlugManX full target resolution and ignored policy,
+  and refuse destructive all/* operations while ExpBottle is enabled.
+- Register restored/newly added projectile flights and scan existing entity handles on enable;
+  item/validity checks for the enable scan run on the entity scheduler. World-removal and
+  impact paths finish counting once. Persisted inactive chunks are not forced to load.
+- Native JDK MethodHandle adapters schedule the original manager callback without an old
+  ExpBottle invocation frame during construction of a new plugin instance.
+- If a manager request finishes without disabling this instance after a completed drain,
+  reopen admission and recreate the terminated refund writer. Failed persistence and
+  an unfinished drain still refuse the operation and remain paused for explicit retry.
+- Rebuild core-owned custom help indexes, including Default, and retain their text,
+  permissions, configured names and unrelated topics. Refresh again on enable.
+
+Verified target only: supplied Shiroha bundler SHA256
+  aff6e1f1033f87e44c5b49fb77f44d6ac694dc388ec114ce3f72259211ba6b77
+Actual runtime: mizuki 26.2-DEV-ver/26.2@28fe077, protocol 776, Folia regions.
+Supplied PlugManX 3.1.0-Beta.2 SHA256
+  15a978faaf3cd48166743aa67d31132c566844b8c583cdb7cbb526932abe429c
+Private command/help layouts and the locked entity snapshot were checked against this core.
+This is not a promise of compatibility with different managers, core builds or vanilla Paper.
+
+No new config keys or PDC formats. Preserve config, languages and pending-refunds.properties.
+Install from 2.1.1-3 with one normal full stop/start: the old version still has the reviewed defects.
+Back up the old JAR and plugin data first; replace the single ExpBottle JAR while stopped.
+Rollback while stopped by replacing the JAR; preserve current pending refunds/player/world data
+as one consistent state. Do not restore an older refund ledger independently of player saves.
+
+After installation, individually targeted PlugMan commands are the supported hot lifecycle.
+All/* destructive commands are intentionally refused. Arbitrary third-party direct-disable
+APIs, dependency cascades, or opening previously unloaded projectile chunks while the plugin
+is absent are outside this guarantee. GC checks establish eventual collection, not immediate GC.
+Cold/hot-flight fixtures intentionally froze a real custom projectile; no claim that ordinary
+players naturally reach these fixture conditions. A direct disable in one isolated test only
+constructed the hot-enable-existing-entity fixture; it is not a supported safe disable path.
+No production files, running server or database was operated.
+
+Refund persistence is not atomic with Minecraft player/world saving: power loss, forced kill
+and backup rollback remain outside the verified guarantees. No hundreds-of-players stress,
+all-third-party-plugin compatibility, or concurrent config-reload guarantee is claimed.
+The review's unconfirmed locale-reload concern was not counted as a repaired defect.

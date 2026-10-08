@@ -1,0 +1,4 @@
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+  <profiles><profile><id>cached</id><repositories><repository><id>BetonQuest-Mirror</id><url>https://repo.maven.apache.org/maven2/</url></repository><repository><id>papermc-repo</id><url>https://repo.papermc.io/repository/maven-public/</url></repository></repositories></profile></profiles>
+  <activeProfiles><activeProfile>cached</activeProfile></activeProfiles>
+</settings>

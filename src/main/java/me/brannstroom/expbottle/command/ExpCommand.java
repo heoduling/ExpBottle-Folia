@@ -4,6 +4,7 @@ import me.brannstroom.expbottle.ExpBottle;
 import me.brannstroom.expbottle.handlers.InfoKeeper;
 import me.brannstroom.expbottle.handlers.MessageHandler;
 import me.brannstroom.expbottle.model.Experience;
+import me.brannstroom.expbottle.model.OwnedTasks;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
@@ -27,6 +28,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
+import java.util.function.Consumer;
+import org.bukkit.command.BlockCommandSender;
+import org.bukkit.Location;
 
 import net.kyori.adventure.text.minimessage.MiniMessage;
 
@@ -65,6 +69,16 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
     // #region Core Command Logic
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        try (var lease = plugin.getWork().enter()) {
+            if (lease == null) {
+                sender.sendMessage("ExpBottle 正在准备热更新，请稍后再试。");
+                return true;
+            }
+            return executeCommand(sender, command, label, args);
+        }
+    }
+
+    private boolean executeCommand(CommandSender sender, Command command, String label, String[] args) {
         MessageHandler.MessageContext ctx = new MessageHandler.MessageContext(sender, label);
 
         if (!(sender instanceof Player)) {
@@ -92,6 +106,7 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
         }
 
         Player player = (Player) sender;
+        plugin.getTransfers().applyRefund(player);
         if (!player.hasPermission(PERM_BASE)) {
             MessageHandler.sendMessage(ctx, "general.no_permission");
             return true;
@@ -331,6 +346,10 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
             MessageHandler.sendMessage(ctx, "get.error.inventory_full");
             return;
         }
+        if (!Experience.canChangeExp(player, -expToWithdraw)) {
+            MessageHandler.sendMessage(ctx, "transfer.capacity");
+            return;
+        }
         Experience.changeExp(player, -expToWithdraw);
         Map<String, String> placeholders = new HashMap<>();
         placeholders.put("amount_xp", String.valueOf(expToWithdraw));
@@ -349,11 +368,22 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
 
     private void createAndGiveBottle(Player p, int exp, int lvlEquiv, MessageHandler.MessageContext msgCtx,
             boolean inputWasLvlOrAll) {
+        ItemStack bottle = createBottle(p, exp, lvlEquiv, inputWasLvlOrAll);
+        boolean selfGenerated = msgCtx != null && msgCtx.getSender().equals(p);
+        if (p.getInventory().firstEmpty() == -1) {
+            p.getWorld().dropItemNaturally(p.getLocation(), bottle);
+            if (selfGenerated) MessageHandler.sendMessage(msgCtx, "get.success.inventory_full_drop");
+        } else {
+            p.getInventory().addItem(bottle);
+        }
+        if (selfGenerated) playGetSound(p);
+    }
+
+    private ItemStack createBottle(Player p, int exp, int lvlEquiv, boolean inputWasLvlOrAll) {
         ItemStack bottle = new ItemStack(Material.EXPERIENCE_BOTTLE);
         ItemMeta meta = bottle.getItemMeta();
         if (meta == null) {
-            plugin.getLogger().warning("Could not get ItemMeta for EXPERIENCE_BOTTLE!");
-            return;
+            throw new IllegalStateException("Could not get ItemMeta for EXPERIENCE_BOTTLE");
         }
         meta.displayName(
                 Component.translatable("item.minecraft.experience_bottle").decoration(TextDecoration.ITALIC, false));
@@ -384,20 +414,7 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
         meta.lore(loreComps);
         bottle.setItemMeta(meta);
 
-        boolean selfGenerated = (msgCtx != null && msgCtx.getSender() instanceof Player
-                && msgCtx.getSender().equals(p));
-
-        if (p.getInventory().firstEmpty() == -1) {
-            p.getWorld().dropItemNaturally(p.getLocation(), bottle);
-            if (selfGenerated && msgCtx != null)
-                MessageHandler.sendMessage(msgCtx, "get.success.inventory_full_drop");
-        } else {
-            p.getInventory().addItem(bottle);
-        }
-
-        if (selfGenerated) {
-            playGetSound(p);
-        }
+        return bottle;
     }
     // #endregion
 
@@ -459,9 +476,6 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
             MessageHandler.sendMessage(ctx, "general.positive_number");
             return;
         }
-        Experience.changeExp(sender, -expToSend);
-        Experience.changeExp(target, expToSend);
-        MessageHandler.MessageContext targetCtx = new MessageHandler.MessageContext(target, ctx.getCommandLabel());
         Map<String, String> senderPlaceholders = new HashMap<>();
         Map<String, String> targetPlaceholders = new HashMap<>();
         senderPlaceholders.put("target", target.getName());
@@ -481,9 +495,11 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
             senderMsgKey = "send.success.points_sender";
             targetMsgKey = "send.success.points_target";
         }
-        MessageHandler.sendMessage(ctx.addAll(senderPlaceholders), senderMsgKey);
-        MessageHandler.sendMessage(targetCtx.addAll(targetPlaceholders), targetMsgKey);
-        playSendReceiveSound(target);
+        plugin.getTransfers().send(sender, target, expToSend, () -> {
+            MessageHandler.MessageContext targetCtx = new MessageHandler.MessageContext(target, ctx.getCommandLabel());
+            MessageHandler.sendMessage(targetCtx.addAll(targetPlaceholders), targetMsgKey);
+            playSendReceiveSound(target);
+        }, () -> MessageHandler.sendMessage(ctx.addAll(senderPlaceholders), senderMsgKey));
     }
     // #endregion
 
@@ -661,7 +677,7 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
         int totalExpNeeded = bottlesToCreate * expPerBottle;
         int freeSlots = getFreeInventorySlots(player);
 
-        int requiredSlots = (bottlesToCreate + InfoKeeper.bottleMaxStackSize - 1) / InfoKeeper.bottleMaxStackSize;
+        int requiredSlots = (bottlesToCreate - 1) / Math.min(InfoKeeper.bottleMaxStackSize, Material.EXPERIENCE_BOTTLE.getMaxStackSize()) + 1;
 
         if (requiredSlots > freeSlots) {
             ctx.add("count", String.valueOf(bottlesToCreate))
@@ -671,10 +687,31 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        for (int i = 0; i < bottlesToCreate; i++) {
-            createAndGiveBottle(player, expPerBottle, levelEquivForBottleDisplay, ctx, inputIsLevels);
+        if (!Experience.canChangeExp(player, -totalExpNeeded)) {
+            MessageHandler.sendMessage(ctx, "transfer.capacity");
+            return;
         }
+        // Build before debiting; commit on this player's owner with a rollback snapshot.
+        ItemStack bottle = createBottle(player, expPerBottle, levelEquivForBottleDisplay, inputIsLevels);
+        ItemStack[] before = player.getInventory().getStorageContents();
+        for (int i = 0; i < before.length; i++) if (before[i] != null) before[i] = before[i].clone();
         Experience.changeExp(player, -totalExpNeeded);
+        try {
+            for (int remaining = bottlesToCreate; remaining > 0;) {
+                ItemStack stack = bottle.clone();
+                int count = Math.min(remaining, bottle.getMaxStackSize());
+                stack.setAmount(count);
+                if (!player.getInventory().addItem(stack).isEmpty())
+                    throw new IllegalStateException("Split inventory capacity changed");
+                remaining -= count;
+            }
+        } catch (RuntimeException ex) {
+            player.getInventory().setStorageContents(before);
+            Experience.changeExp(player, totalExpNeeded);
+            plugin.getLogger().log(Level.WARNING, "Split failed; inventory and experience restored", ex);
+            MessageHandler.sendMessage(ctx, "split.error.generic");
+            return;
+        }
         Map<String, String> successPlaceholders = new HashMap<>();
         successPlaceholders.put("count", String.valueOf(bottlesToCreate));
         String baseMsgKey;
@@ -753,11 +790,6 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
             typeKey = "types.points";
         }
 
-        String typeDisplay = MessageHandler.getRawMessage(targetPlayer, typeKey);
-        if (typeDisplay == null || typeDisplay.startsWith("<red>Missing or invalid type translation:")) {
-            typeDisplay = isLevels ? "levels" : "experience points";
-        }
-
         if (expPerBottle == 0) {
             MessageHandler.sendMessage(ctx, "give.error.zero_exp_per_bottle");
             return;
@@ -778,20 +810,33 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
             }
         }
 
-        int requiredSlots = (count + InfoKeeper.bottleMaxStackSize - 1) / InfoKeeper.bottleMaxStackSize;
+        int itemCount = count;
+        boolean levelInput = isLevels;
+        String senderName = sender.getName();
+        Consumer<Runnable> reply = feedback(sender);
+        Runnable give = () -> {
+        if (!targetPlayer.isOnline()) {
+            reply.accept(() -> MessageHandler.sendMessage(ctx.add("target", args[1]), "general.player_not_found"));
+            return;
+        }
+        String typeDisplay = MessageHandler.getRawMessage(targetPlayer, typeKey);
+        if (typeDisplay == null || typeDisplay.startsWith("<red>Missing or invalid type translation:")) {
+            typeDisplay = levelInput ? "levels" : "experience points";
+        }
+        int requiredSlots = (itemCount - 1) / Math.min(InfoKeeper.bottleMaxStackSize, Material.EXPERIENCE_BOTTLE.getMaxStackSize()) + 1;
         int availableSlots = getFreeInventorySlots(targetPlayer);
 
         if (availableSlots < requiredSlots) {
             ctx.add("target", targetPlayer.getName())
                     .add("required", String.valueOf(requiredSlots))
                     .add("available", String.valueOf(availableSlots));
-            MessageHandler.sendMessage(ctx, "give.error.target_inventory_full");
+            reply.accept(() -> MessageHandler.sendMessage(ctx, "give.error.target_inventory_full"));
             return;
         }
 
         String recipientNameForLore = targetPlayer.getName();
 
-        for (int i = 0; i < count; i++) {
+        for (int i = 0; i < itemCount; i++) {
             ItemStack bottle = new ItemStack(Material.EXPERIENCE_BOTTLE);
             ItemMeta meta = bottle.getItemMeta();
             if (meta != null) {
@@ -816,40 +861,68 @@ public class ExpCommand implements CommandExecutor, TabCompleter {
             targetPlayer.getInventory().addItem(bottle);
         }
 
-        ctx.add("count", String.valueOf(count))
+        ctx.add("count", String.valueOf(itemCount))
                 .add("amount_val", amountValStr)
                 .add("type", typeDisplay);
 
         if (sender instanceof Player) {
             ctx.add("target", targetPlayer.getName());
-            MessageHandler.sendMessage(ctx, "give.success.sender");
+            reply.accept(() -> MessageHandler.sendMessage(ctx, "give.success.sender"));
         }
 
         MessageHandler.MessageContext targetCtx = new MessageHandler.MessageContext(targetPlayer,
                 ctx.getCommandLabel());
-        targetCtx.add("count", String.valueOf(count))
+        targetCtx.add("count", String.valueOf(itemCount))
                 .add("amount_val", amountValStr)
                 .add("type", typeDisplay);
 
         if (sender instanceof Player) {
-            targetCtx.add("sender", ((Player) sender).getName());
+            targetCtx.add("sender", senderName);
             MessageHandler.sendMessage(targetCtx, "give.success.target");
         } else {
             MessageHandler.sendMessage(targetCtx, "give.success.target_from_console");
         }
 
         playSendReceiveSound(targetPlayer);
+        };
+        Runnable unavailable = () -> reply.accept(() -> MessageHandler.sendMessage(ctx.add("target", args[1]), "general.player_not_found"));
+        try {
+            OwnedTasks.run(plugin, targetPlayer, give, unavailable);
+        } catch (RuntimeException ex) {
+            unavailable.run();
+            plugin.getLogger().log(Level.WARNING, "Could not give experience bottles", ex);
+        }
     }
     // #endregion
 
     // #endregion
 
     // #region Inventory Utilities
+    private Consumer<Runnable> feedback(CommandSender sender) {
+        if (sender instanceof Player player) return action -> {
+            OwnedTasks.run(plugin, player, action, null);
+        };
+        if (sender instanceof BlockCommandSender block) {
+            Location location = block.getBlock().getLocation();
+            return action -> trackedFeedback(action, wrapped -> Bukkit.getRegionScheduler().run(plugin, location, task -> wrapped.run()));
+        }
+        return action -> trackedFeedback(action, wrapped -> Bukkit.getGlobalRegionScheduler().run(plugin, task -> wrapped.run()));
+    }
+
+    private void trackedFeedback(Runnable action, Consumer<Runnable> schedule) {
+        var lease = plugin.getWork().continuation();
+        if (lease == null) return;
+        try { schedule.accept(() -> { try { action.run(); } finally { lease.close(); } }); }
+        catch (RuntimeException ex) { lease.close(); }
+    }
+
     private boolean canReceiveItem(Player player) {
         return player.getInventory().firstEmpty() != -1;
     }
 
     private int getFreeInventorySlots(Player player) {
+        if (!Bukkit.isOwnedByCurrentRegion(player))
+            throw new IllegalStateException("Inventory access requires the player's owning region");
         int emptySlots = 0;
         for (ItemStack item : player.getInventory().getStorageContents()) {
             if (item == null || item.getType() == Material.AIR) {

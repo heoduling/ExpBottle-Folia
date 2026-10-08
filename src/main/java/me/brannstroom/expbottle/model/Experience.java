@@ -1,6 +1,7 @@
 package me.brannstroom.expbottle.model;
 
 import org.bukkit.entity.Player;
+import org.bukkit.Bukkit;
 
 /**
  * Utility class for handling player experience calculations based on vanilla
@@ -17,7 +18,22 @@ public class Experience {
 	 * @return Total experience points of player.
 	 */
 	public static int getExp(Player player) {
-		return getExpFromLevel(player.getLevel()) + Math.round(getExpToNext(player.getLevel()) * player.getExp());
+		return (int) Math.min(Integer.MAX_VALUE, getExpLong(player));
+	}
+
+	public static long getExpLong(Player player) {
+		if (!Bukkit.isOwnedByCurrentRegion(player))
+			throw new IllegalStateException("Experience access requires the player's owning region");
+		int level = player.getLevel();
+		double base = level > 30 ? 4.5 * level * level - 162.5 * level + 2220
+				: level > 15 ? 2.5 * level * level - 40.5 * level + 360 : (double) level * level + 6.0 * level;
+		double next = level >= 30 ? 9.0 * level - 158 : level >= 15 ? 5.0 * level - 38 : 2.0 * level + 7;
+		return Math.max(0, (long) (base + Math.round(next * player.getExp())));
+	}
+
+	public static boolean canChangeExp(Player player, int amount) {
+		long current = getExpLong(player);
+		return current <= Integer.MAX_VALUE && current + amount >= 0 && current + amount <= Integer.MAX_VALUE;
 	}
 
 	/**
@@ -62,11 +78,10 @@ public class Experience {
 	 * @param amount Amount of experience to add (or subtract if negative).
 	 */
 	public static void changeExp(Player player, int amount) {
-		int experience = getExp(player) + amount;
-		if (experience < 0) {
-			experience = 0;
-		}
-		setExp(player, experience);
+		long current = getExpLong(player);
+		if (current > Integer.MAX_VALUE || current + amount < 0 || current + amount > Integer.MAX_VALUE)
+			throw new IllegalArgumentException("Experience change exceeds the supported range");
+		setExp(player, (int) (current + amount));
 	}
 
 	/**
@@ -77,13 +92,11 @@ public class Experience {
 	 * @param exp    Amount of experience points.
 	 */
 	private static void setExp(Player player, int exp) {
-		player.setTotalExperience(0);
-		player.setLevel(0);
-		player.setExp(0);
-
-		if (exp > 0) {
-			player.giveExp(exp);
-		}
+		int level = (int) getLevelFromExp(exp);
+		int base = getExpFromLevel(level);
+		player.setLevel(level);
+		player.setExp((float) ((double) (exp - base) / getExpToNext(level)));
+		player.setTotalExperience(exp);
 	}
 
 	/**

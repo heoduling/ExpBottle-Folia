@@ -101,6 +101,18 @@ public class MessageHandler {
             }
         }
 
+        if (rawValue == null) {
+            // Older supplied language files use these existing keys for the same messages.
+            String fallback = switch (path) {
+                case "send.success.points_sender" -> "send.success.all_sender";
+                case "send.success.points_target" -> "send.success.all_target";
+                case "send.error.not_enough_for_level" -> "send.error.not_enough_lvl";
+                case "send.error.not_enough_points" -> "get.error.not_enough_points";
+                default -> null;
+            };
+            if (fallback != null) return getRawMessage(sender, fallback);
+        }
+
         if (rawValue instanceof String) {
             return (String) rawValue;
         } else if (rawValue instanceof List) {

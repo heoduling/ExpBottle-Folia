@@ -1,6 +1,9 @@
 package me.brannstroom.expbottle.listeners;
 
 import java.util.logging.Level;
+import com.destroystokyo.paper.event.entity.EntityAddToWorldEvent;
+import com.destroystokyo.paper.event.entity.EntityRemoveFromWorldEvent;
+import org.bukkit.Bukkit;
 import me.brannstroom.expbottle.ExpBottle;
 import me.brannstroom.expbottle.handlers.MessageHandler;
 import org.bukkit.Material;
@@ -11,15 +14,16 @@ import org.bukkit.entity.Projectile;
 import org.bukkit.entity.ThrownExpBottle;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.Event;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.entity.ExpBottleEvent;
 import org.bukkit.event.entity.ProjectileLaunchEvent;
+import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerInteractEvent;
-import org.bukkit.inventory.AnvilInventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataContainer;
@@ -36,23 +40,58 @@ public class ExpBottleListener implements Listener {
     // #region Event Handlers
     @EventHandler
     public void onExpBottle(ExpBottleEvent e) {
+        try {
         ThrownExpBottle bottle = e.getEntity();
         ItemStack item = bottle.getItem();
         if (isCustom(item))
             e.setExperience(getExp(item));
+        } finally { plugin.getWork().finishFlight(e.getEntity().getUniqueId()); }
+    }
+
+    @EventHandler public void onEntityRemove(EntityRemoveEvent event) {
+        if (event.getEntity() instanceof ThrownExpBottle)
+            plugin.getWork().finishFlight(event.getEntity().getUniqueId());
+    }
+
+    @EventHandler public void onEntityAdd(EntityAddToWorldEvent event) {
+        if (event.getEntity() instanceof ThrownExpBottle bottle && isCustom(bottle.getItem()))
+            plugin.getWork().trackFlight(bottle.getUniqueId());
+    }
+
+    @EventHandler public void onEntityLeave(EntityRemoveFromWorldEvent event) {
+        if (event.getEntity() instanceof ThrownExpBottle)
+            plugin.getWork().finishFlight(event.getEntity().getUniqueId());
+    }
+
+    /** Exact target core exposes a locked entity snapshot; read item/validity only on its owner. */
+    public void registerExistingFlights() {
+        for (var world : Bukkit.getWorlds()) for (var bottle : world.getEntitiesByClass(ThrownExpBottle.class)) {
+            var lease = plugin.getWork().continuation();
+            if (lease == null) throw new IllegalStateException("Flight registration already sealed");
+            try {
+                if (bottle.getScheduler().run(plugin, task -> {
+                    try {
+                        if (bottle.isValid() && isCustom(bottle.getItem()))
+                            plugin.getWork().trackFlight(bottle.getUniqueId());
+                    } finally { lease.close(); }
+                }, lease::close) == null) lease.close();
+            } catch (RuntimeException ex) { lease.close(); throw ex; }
+        }
     }
 
     @EventHandler
     public void onInventoryClick(InventoryClickEvent e) {
-        if (!(e.getView().getTopInventory().getHolder() instanceof AnvilInventory) ||
+        try (var lease = plugin.getWork().enter()) {
+        if (e.getView().getTopInventory().getType() != InventoryType.ANVIL ||
                 e.getSlotType() != InventoryType.SlotType.RESULT ||
                 e.getCurrentItem() == null)
             return;
 
         if (isCustom(e.getView().getItem(0)) && e.getRawSlot() == 2) {
             e.setCancelled(true);
-            if (e.getWhoClicked() instanceof Player)
+            if (lease != null && e.getWhoClicked() instanceof Player)
                 MessageHandler.sendMessage((Player) e.getWhoClicked(), "anvil.error.modify_attempt");
+        }
         }
     }
 
@@ -60,8 +99,11 @@ public class ExpBottleListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerInteract(PlayerInteractEvent e) {
         ItemStack item = e.getItem();
-        if (item == null || !isCustom(item))
+        if (item == null || !isCustom(item) || e.getHand() == null || e.useItemInHand() == Event.Result.DENY)
             return;
+
+        try (var lease = plugin.getWork().enter()) {
+        if (lease == null) { e.setCancelled(true); return; }
 
         Player p = e.getPlayer();
         Action action = e.getAction();
@@ -74,22 +116,29 @@ public class ExpBottleListener implements Listener {
 
         if (action == Action.RIGHT_CLICK_AIR || action == Action.RIGHT_CLICK_BLOCK) {
             e.setCancelled(true);
-            ItemStack bottleToThrow = item.clone();
+            ItemStack original = item.clone();
+            ItemStack bottleToThrow = original.clone();
             bottleToThrow.setAmount(1);
-            if (item.getAmount() > 1)
-                item.setAmount(item.getAmount() - 1);
-            else
-                p.getInventory().setItem(e.getHand(), null);
-            p.updateInventory();
+            ThrownExpBottle[] created = new ThrownExpBottle[1];
             try {
-                ThrownExpBottle thrownBottle = p.launchProjectile(ThrownExpBottle.class);
-                if (thrownBottle != null)
-                    thrownBottle.setItem(bottleToThrow);
-                else
-                    plugin.getLogger().warning("Launched projectile was NULL!");
+                ThrownExpBottle thrownBottle = p.launchProjectile(ThrownExpBottle.class, null, bottle -> {
+                    created[0] = bottle;
+                    bottle.setItem(bottleToThrow);
+                });
+                // This core returns a non-null, invalid entity when launch is cancelled.
+                if (thrownBottle == null || !thrownBottle.isValid()) return;
+                plugin.getWork().trackFlight(thrownBottle.getUniqueId());
+                if (!original.equals(p.getInventory().getItem(e.getHand()))) {
+                    thrownBottle.remove();
+                    return;
+                }
+                original.setAmount(original.getAmount() - 1);
+                p.getInventory().setItem(e.getHand(), original.getAmount() == 0 ? null : original);
             } catch (Exception ex) {
+                if (created[0] != null && created[0].isValid()) created[0].remove();
                 plugin.getLogger().log(Level.SEVERE, "Error launching projectile!", ex);
             }
+        }
         }
     }
 

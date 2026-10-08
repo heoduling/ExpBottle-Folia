@@ -4,6 +4,9 @@ import me.brannstroom.expbottle.command.ExpCommand;
 import me.brannstroom.expbottle.handlers.InfoKeeper;
 import me.brannstroom.expbottle.handlers.MessageHandler;
 import me.brannstroom.expbottle.listeners.ExpBottleListener;
+import me.brannstroom.expbottle.model.ExperienceTransfers;
+import me.brannstroom.expbottle.model.WorkTracker;
+import me.brannstroom.expbottle.model.HotReload;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -22,20 +25,35 @@ public class ExpBottle extends JavaPlugin {
     // #region Fields
     public static ExpBottle instance;
     private static final int EXPECTED_CONFIG_VERSION = 5;
+    private ExperienceTransfers transfers;
+    private WorkTracker work;
+    private HotReload hotReload;
+
+    public ExperienceTransfers getTransfers() { return transfers; }
+    public WorkTracker getWork() { return work; }
     // #endregion
 
     // #region Plugin Lifecycle
     @Override
     public void onEnable() {
         instance = this;
+        work = new WorkTracker();
 
         checkAndBackupOldConfig();
         saveDefaultConfig();
         setupLangFiles();
         reloadPluginConfig();
+        try {
+            transfers = new ExperienceTransfers(this);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Cannot load pending experience refunds; refusing to discard them", ex);
+        }
+        getServer().getPluginManager().registerEvents(transfers, this);
 
         registerCommands();
         registerListeners();
+        hotReload = new HotReload(this);
+        hotReload.register();
 
         PluginMeta meta = this.getPluginMeta();
         getLogger().info("ExpBottle v" + meta.getVersion() + " enabled!");
@@ -43,6 +61,9 @@ public class ExpBottle extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (hotReload != null) hotReload.unregister();
+        if (work != null) work.close();
+        if (transfers != null) transfers.close();
         getLogger().info("ExpBottle disabled!");
         instance = null;
     }
@@ -56,13 +77,19 @@ public class ExpBottle extends JavaPlugin {
             ExpCommand expCommandExecutor = new ExpCommand();
             command.setExecutor(expCommandExecutor);
             command.setTabCompleter(expCommandExecutor);
+            var topic = new org.bukkit.help.GenericCommandHelpTopic(command);
+            getServer().getHelpMap().addTopic(topic);
+            getServer().getHelpMap().addTopic(new org.bukkit.help.IndexHelpTopic(getName(),
+                    "All commands for " + getName(), null, java.util.List.of(topic)));
         } else {
             getLogger().severe("Could not register command '/" + commandName + "'! Check plugin.yml and config.yml.");
         }
     }
 
     private void registerListeners() {
-        getServer().getPluginManager().registerEvents(new ExpBottleListener(), this);
+        ExpBottleListener listener = new ExpBottleListener();
+        getServer().getPluginManager().registerEvents(listener, this);
+        listener.registerExistingFlights();
     }
     // #endregion
 
@@ -93,7 +120,7 @@ public class ExpBottle extends JavaPlugin {
             }
         }
 
-        String[] defaultLangs = { "en_US.yml", "ru_RU.yml" };
+        String[] defaultLangs = { "en_US.yml", "ru_RU.yml", "zh_CN.yml" };
         List<String> copiedLangFiles = new ArrayList<>();
         for (String langFile : defaultLangs) {
             File destinationFile = new File(langFolder, langFile);
@@ -136,6 +163,7 @@ public class ExpBottle extends JavaPlugin {
                 String localeKey = langFile.getName().substring(0, langFile.getName().length() - 4);
                 try {
                     FileConfiguration langConfig = YamlConfiguration.loadConfiguration(langFile);
+                    mergeTransferMessages(langConfig, langFile, localeKey);
                     MessageHandler.addLoadedLocale(localeKey, langConfig);
                     loadedFromFileKeys.add(localeKey);
                     if (localeKey.equalsIgnoreCase(defaultLocaleKeyFromConfig)) {
@@ -166,6 +194,22 @@ public class ExpBottle extends JavaPlugin {
             getLogger().info("en_US locale not loaded from files. Attempting to load internal en_US.yml.");
             loadInternalLocale("en_US.yml",
                     !defaultExplicitlyLoaded && !"en_US".equalsIgnoreCase(defaultLocaleKeyFromConfig));
+        }
+    }
+
+    private void mergeTransferMessages(FileConfiguration config, File destination, String locale) throws java.io.IOException {
+        String resource = locale.startsWith("zh") ? "zh_CN" : locale.startsWith("ru") ? "ru_RU" : "en_US";
+        try (InputStream in = getResource("lang/" + resource + ".yml")) {
+            if (in == null) throw new java.io.IOException("Missing internal language " + resource);
+            FileConfiguration defaults = YamlConfiguration.loadConfiguration(new InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
+            boolean changed = false;
+            for (String key : List.of("transfer.pending", "transfer.failed", "transfer.capacity", "transfer.refunded")) {
+                if (!config.contains(key)) {
+                    config.set(key, defaults.getString(key));
+                    changed = true;
+                }
+            }
+            if (changed) config.save(destination);
         }
     }
 
